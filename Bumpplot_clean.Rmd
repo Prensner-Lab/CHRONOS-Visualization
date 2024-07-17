@@ -1,0 +1,397 @@
+---
+title: "CHRONOS Visualization"
+output: html_notebook
+---
+CHRONOS Visualization: This R script visualizes CHRONOS data from DepMap CRISPR screens. It calculates the mean CHRONOS value of cancer clusters from custom downloaded data, creating a bump plot of the negative mean CHRONOS values and a waterfall plot for all CHRONOS mean values for individual genes or gene families of your choice. It can also create a waterfall plot of your genes of interest on a specific cluster or a specific cell line
+
+```{r}
+library(tidyverse)
+pacman::p_load(pacman, ggbump, gridExtra) 
+library(ggbump)
+library(dplyr)
+library(gridExtra)
+library(ggplot2)
+```
+
+The bump_process function processes negative CHRONOS data for the bump plot
+Input: 
+- Name of the data frame you created by read.csv
+- Cancer type of the cluster you downloaded
+
+Output: 
+- Data frame with five columns of CHRONOS Value, gene symbol, rank, rank percentile, cell line
+
+```{r}
+convert_scientific_notation <- function(x) {
+  if (grepl("e", x)) {
+    parts <- strsplit(x, "e")[[1]]
+    base <- as.numeric(parts[1])
+    exponent <- as.numeric(parts[2])
+    return(base * 10^exponent)
+  } else {
+    return(as.numeric(x))
+  }
+}
+
+bump_process <- function(input_df, cluster_name) {
+  df <- input_df[, -1]
+  
+  df <- colMeans(df, na.rm = T)
+  df <- as.data.frame(df)
+  colnames(df) <- "Chronos_Value"
+  df$gene_symbol <- rownames(df)
+  
+  # Filtering the data frame
+  df <- df[df <= 0, ]
+  
+  # Ranking the first column
+  df <- df %>% arrange(desc(df[,1]))
+  df$Rank <- seq.int(nrow(df))
+
+
+  num_rows <- nrow(df)
+  
+
+  df$Percentage <- df$Rank / num_rows * 100
+  df$line <- cluster_name 
+  
+  df$Percentage <- paste0(round(df$Percentage, 2), "%")
+  
+  return(df)
+}
+```
+
+The water_process function processes all CHRONOS data for the waterfall plot
+Input: 
+- Name of the data frame you created by read.csv
+- Cancer type of the cluster you downloaded
+
+Output: 
+- Data frame with four columns of CHRONOS Value, gene symbol, rank, cell line
+
+```{r}
+water_process <- function(input_df, cluster_name) {
+  df <- input_df[, -1]
+  
+  df <- colMeans(df, na.rm = T)
+  df <- as.data.frame(df)
+  colnames(df) <- "Chronos_Value"
+  df$gene_symbol <- rownames(df)
+  
+  # Ranking the first column
+  df <- df %>% arrange(desc(df[,1]))
+  df$Rank <- seq.int(nrow(df))
+  
+  df$line <- cluster_name 
+  
+  return(df)
+}
+```
+
+The plot function creates a bump plot and a waterfall plot of individual genes or gene families
+Preparation:
+- Combine the results of bump_process into a data frame called "total_df"
+- Combine the results of water_process into a data frame called "water_total"
+
+Input: 
+- First few letters of the genes or gene families you want to focus on
+
+Output: 
+- Bump plot with the percentile rank of the mean of the negative CHRONOS values on the Y axis and the cluster name you specified in bump_process as the X-axis. The points are labelled with the percentile rank and distinguished by different colors
+- Aggregated waterfall plot of all the clusters with the mean CHRONOS values on the Y axis and the rank of the CHRONOS values on the X-axis. The points are labelled with its cluster name and distinguished by the same colors as the bump plot
+
+```{r}
+plot <- function(specific_points){
+  highlight <- sapply(total_df$gene_symbol, function(gene) {
+    any(sapply(specific_points, function(prefix) startsWith(gene, prefix)))
+  })
+  total_df$highlight <- highlight
+  highlighted_points <- total_df[highlight, ]
+  highlighted_points$Percentage_numeric <- as.numeric(sub("%", "", highlighted_points$Percentage))
+  
+  # Assign colors to each unique gene
+  unique_genes <- unique(total_df$gene_symbol[highlight])
+  colors <- rainbow(length(unique_genes))
+  names(colors) <- unique_genes
+  
+  # Create the plot
+  bump <- ggplot(highlighted_points, aes(x = line, y = Percentage_numeric, label = Percentage)) +
+    geom_point(aes(color = gene_symbol), size = 4) +  # Adjust size if needed
+    geom_line(aes(group = gene_symbol, color = gene_symbol), size = 1) +
+    geom_text(aes(color = "black"), size = 3.5, vjust = +2.0, fontface = "bold") +
+    scale_color_manual(values = c(colors)) +  # Set color for the lines
+    scale_y_continuous(breaks = seq(0, 100, by = 20), labels = paste0(seq(0, 100, by = 20), "%")) +
+    theme_minimal() +
+    labs(title = "Rank by Cell Line",
+         x = "Cell Line",
+         y = "Percentile Rank (Mean Negative CHRONOS Value)",
+         color = "Selected Genes")
+  
+  highlight1 <- sapply(water_total$gene_symbol, function(gene) {
+    any(sapply(specific_points, function(prefix) startsWith(gene, prefix)))
+  })
+  water_total$highlight <- highlight1
+  water_points <- water_total[highlight1, ]
+  
+  selected_genes <- unique(water_total$gene_symbol[highlight1])
+  cols <- rainbow(length(selected_genes))
+  names(cols) <- selected_genes
+
+  waterfall <- ggplot(water_total, aes(x = Rank, y = Chronos_Value)) +
+    geom_point(aes(color = gene_symbol, size = highlight)) +
+    scale_color_manual(values = cols) +
+    scale_size_manual(values = c(0.5, 3)) +
+    geom_text(data = water_points, aes(label = line), 
+              vjust = 1.5, size = 3) +
+    geom_hline(yintercept = -1, linetype = "dashed", color = "black") +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "black") +
+    labs(
+      title = "Genes Expression Plot of Aggregated Clusters",
+      x = "Rank",
+      y = "Average Chronos Value",
+      color = "Highlight"
+    ) +
+    theme_minimal()
+  
+  grid.arrange(bump, waterfall, ncol = 2)
+}
+```
+
+The separate_plot function creates a waterfall plot using the data frame of a specific cluster of specific genes or gene families of interest
+Input: 
+- Name of data frame processed by water_process
+- First few letters of the genes or gene families you want to focus on
+- Preferred name of graph
+
+Output:
+- A cluster-specific waterfall plot with the mean CHRONOS values on the Y axis and the rank of the CHRONOS values on the X-axis. The points are labelled with its mean CHRONOS value and distinguished by different colors
+
+```{r}
+separate_plot <- function(input_df, points, main, cols, legend="None"){
+  highlight1 <- sapply(input_df$gene_symbol, function(gene) {
+  any(sapply(points, function(prefix) startsWith(gene, prefix)))
+  })
+  input_df$highlight <- highlight1
+  input_points <- input_df[highlight1, ]
+  
+  main <- ggplot(input_df, aes(x = Rank, y = Chronos_Value)) +
+    geom_point(aes(color = gene_symbol, size = highlight)) +
+    scale_color_manual(values = cols) +
+    scale_size_manual(values = c(0.5, 3)) +
+    scale_y_continuous(breaks = seq(-5, 1, by = 1), limits = c(-5, 1)) +
+    geom_text(data = input_points, aes(label = round(Chronos_Value, 2)), 
+              vjust = 1.5, size = 3) +
+    geom_hline(yintercept = -1, linetype = "dashed", color = "black") +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "black") +
+    labs(
+      title = main,
+      x = "Rank",
+      y = "Average Chronos Value",
+      color = "Highlight"
+    ) +
+    theme_minimal() +
+    theme(legend.position = legend)
+}
+```
+
+The set_color function assigns colors to the genes of interest so the color will be consistent when graphing plots for each cluster separately
+Input:
+- Combined data set
+
+Output:
+- Assign different colors to the specified genes and assign grey to the rest of the genes
+
+```{r}
+set_color <- function(combined_df, specific_points){
+    # Combine all gene symbols from different datasets
+  all_genes <- unique(combined_df$gene_symbol)
+  
+  # Determine the unique selected genes across all datasets
+  highlight_all <- sapply(all_genes, function(gene) {
+    any(sapply(specific_points, function(prefix) startsWith(gene, prefix)))
+  })
+  
+  # Generate color mapping for all unique genes
+  selected_genes_all <- unique(all_genes[highlight_all])
+  cols <- rainbow(length(selected_genes_all))
+  names(cols) <- selected_genes_all
+  
+  # Assign grey color to all other genes
+  all_gene_colors <- rep("grey", length(all_genes))
+  names(all_gene_colors) <- all_genes
+  all_gene_colors[names(cols)] <- cols
+}
+```
+
+The gene_waterfall function creates a waterfall plot of your genes of interest on a specific cell line
+Input:
+- Data frame of a specific cluster -> obtained through read.csv of the original file downloaded from DepMap
+- Name of cell line you are interested in (cell line must be from the specified cluster, open up the data frame of the cluster and choose one in the first column starting with ACH)
+- Genes of interest
+
+Output:
+- A cell-line-specific waterfall plot with the CHRONOS values on the Y axis and the rank of the CHRONOS values on the X-axis. The points are labelled with its rounded CHRONOS value and distinguished by different colors
+
+```{r}
+gene_waterfall <- function(input_df, cell_line_name, gene_selected){
+  df <- input_df
+  rownames(df) <- df[,1]
+  df <- df[, -1]
+  df <- t(df)
+  df <- as.data.frame(df)
+  
+  df1 <- as.data.frame(df[[cell_line_name]])
+  df1$gene_symbol <- rownames(df)
+  columns <- colnames(df1)
+  columns[1] <- "Chronos_Value"
+  colnames(df1) <- columns
+  df1$Rank <- rank(df1$Chronos_Value, ties.method = "first")
+  
+  specific_points <- gene_selected
+  
+
+  highlight1 <- sapply(df1$gene_symbol, function(gene) {
+    any(sapply(specific_points, function(prefix) startsWith(gene, prefix)))
+  })
+  
+  df1$highlight <- highlight1
+  df1_points <- df1[highlight1, ]
+  
+  selected_genes <- unique(df1$gene_symbol[highlight1])
+  cols <- rainbow(length(selected_genes))
+  names(cols) <- selected_genes
+  
+  ggplot(df1, aes(x = Rank, y = Chronos_Value)) +
+    geom_point(aes(color = gene_symbol, size = highlight)) +
+    scale_color_manual(values = cols) +
+    scale_size_manual(values = c(0.5, 3)) +
+    geom_text(data = df1_points, aes(label = round(Chronos_Value, 2)), 
+                                     vjust = 1.5, size = 3) +
+                geom_hline(yintercept = -1, linetype = "dashed", color = "black") +
+                geom_hline(yintercept = 1, linetype = "dashed", color = "black") +
+                labs(
+                  title = paste0("Genes Expression Plot of ", cell_line_name),
+                  x = "Rank",
+                  y = "Chronos Value of Specific Cell Line",
+                  color = "Highlight"
+                ) +
+                theme_minimal()
+}
+```
+
+---------Main---------------
+0. Install and call all the packages at the start of the script
+0. Create a data frame for each csv file with a unique name using read.csv. Make sure that the file is in the same directory where you are running the program
+1. Run the bump_process and water_process functions on the data frame
+2. Combine the data frames created by bump_process and combine them to total_df using rbind
+3. Combine the data frames created by water_process and combine them to water_total using rbind
+4. Create bump plot and waterfall plot of specific genes of your choice
+5. If you want separate graphs for each cluster:
+- Specify the genes of interest into the variable called specific_points
+- Run set_colors on water_total if you want to plot all CHRONOS values, positive and negative
+- Run separate_plot on each data frame processed by water_process and save the result to a variable. Don't change the legend_plot. Adjust grid.arrange to include the variables you saved, the legend_plot, and set ncol to the number of variables you included plus one to account for the legend. This outputs the graphs side-by-side in the same grid with a legend.
+6. If you want a waterfall plot for a specific cell line, run gene_waterfall and save the result to a variable. Then print the variable
+
+```{r}
+#-------------------------------------------Input Files---------------------------------------
+cervical_read <- read.csv('CRISPR_(DepMap_Public_24Q2+Score,_Chronos)_subsetted_NAsdropped_Cervical15.csv')
+breast_read <- read.csv('CRISPR_(DepMap_Public_24Q2+Score,_Chronos)_subsetted_NAsdropped_Breast14.csv')
+prostate_read <- read.csv('CRISPR_(DepMap_Public_24Q2+Score,_Chronos)_subsetted_NAsdropped_Prostate10.csv')
+thyroid_read <- read.csv('CRISPR_(DepMap_Public_24Q2+Score,_Chronos)_subsetted_NAsdropped_Thyroid9.csv')
+
+
+#-------------------------------------------Process Files-------------------------------------
+cervical_df <- bump_process(cervical_read, "Cervical")
+cervical_df1 <- water_process(cervical_read, "Cervical")
+
+breast_df <- bump_process(breast_read, "Breast")
+breast_df1 <- water_process(breast_read, "Breast")
+
+prostate_df <- bump_process(prostate_read, "Prostate")
+prostate_df1 <- water_process(prostate_read, "Prostate")
+
+thyroid_df <- bump_process(thyroid_read, "Thyroid")
+thyroid_df1 <- water_process(thyroid_read, "Thyroid")
+
+
+#-------------------------------------------Combine Files-------------------------------------
+total_df <- rbind(cervical_df, breast_df, prostate_df, thyroid_df)
+water_total <- rbind(cervical_df1, breast_df1, prostate_df1, thyroid_df1)
+
+
+#-------------------------------------------Bump & Waterfall Plots------------------------------------
+plot(c("MYC", "ERBB2")) #MYC important for all, ERBB2 only important for breast cancer
+
+#-------------------------------------------Separate Graph (with genes best for presentation)-------------------------------------
+specific_points <- c("MYC", "ERBB2")
+cols <- set_color(water_total, specific_points)
+
+cervical <- separate_plot(cervical_df1, specific_points, "Cervical", cols)
+breast <- separate_plot(breast_df1, specific_points, "Breast", cols)
+prostate <- separate_plot(prostate_df1, specific_points, "Prostate", cols)
+thyroid <- separate_plot(thyroid_df1, specific_points, "Thyroid", cols)
+
+legend_plot <- ggplot() +
+  geom_point(aes(x = 1, y = 1, color = names(cols)), size = 5) +  # Example legend items
+  scale_color_manual(values = cols) +
+  labs(color = "Gene Symbol") +
+  theme_minimal() +
+  theme(legend.position = "left")
+
+grid.arrange(cervical, breast, prostate, thyroid, legend_plot, ncol = 5)
+
+separate <- gene_waterfall(breast_read, "ACH-001683", specific_points)
+print(separate)
+```
+
+Actual use: graph a specific gene family of interest from the csv file, "EEF" in this case
+
+```{r}
+#-------------------------------------------Separate Graph (with Interested Genes)-------------------------------------
+#Extract interested genes
+interested_genes <- read.csv("~/Desktop/Umich/CRISPR/Achilles_gene_effect_ribosome_mito_eIF_2.csv")
+prefixes <- c("EIF", "EEF", "RPL", "RPS")
+pattern <- paste0("^(", paste(prefixes, collapse = "|"), ")")
+specific_columns <- grep(pattern, colnames(interested_genes), value = TRUE)
+specific_columns <- specific_columns[!grepl("_", specific_columns)]
+good_genes <- sub("\\..*$", "", specific_columns)
+
+#Specify gene family by changing EEF to other family prefixes
+coolgenes <- grep("^EEF", good_genes, value = TRUE)
+
+#Bump plot and waterfall plot for aggregated cluster data
+plot(coolgenes)
+
+#Waterfall plots for separate clusters
+cols1 <- set_color(water_total, coolgenes)
+
+cervical1 <- separate_plot(cervical_df1, coolgenes, "Cervical", cols1)
+breast1 <- separate_plot(breast_df1, coolgenes, "Breast", cols1)
+prostate1 <- separate_plot(prostate_df1, coolgenes, "Prostate", cols1)
+thyroid1 <- separate_plot(thyroid_df1, coolgenes, "Thyroid", cols1)
+
+legend_plot1 <- ggplot() +
+  geom_point(aes(x = 1, y = 1, color = names(cols1)), size = 5) +  # Example legend items
+  scale_color_manual(values = cols1) +
+  labs(color = "Gene Symbol") +
+  theme_minimal() +
+  theme(legend.position = "left")
+
+grid.arrange(cervical1, breast1, prostate1, thyroid1, legend_plot1, ncol = 5)
+
+#Waterfall plot of interested genes in a specific cell line
+gene <- gene_waterfall(cervical_read, "ACH-000490", coolgenes)
+print(gene)
+
+
+
+```
+
+--Victor Wang 2024/7/1 :)
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
